@@ -15,7 +15,7 @@
 
 extern crate byteorder;
 extern crate getopts;
-extern crate net2;
+extern crate socket2;
 extern crate rand;
 extern crate privdrop;
 
@@ -31,10 +31,8 @@ use byteorder::{BigEndian, ByteOrder};
 
 use getopts::Options;
 
-use net2::UdpBuilder;
-use net2::unix::UnixUdpBuilderExt;
-
 use rand::random;
+use socket2::{Domain, Protocol, Socket, Type};
 
 #[derive(Debug, Copy, Clone)]
 struct NtpTimestamp {
@@ -279,29 +277,24 @@ impl NtpServer {
         let mut sockets = vec![];
 
         for addr in local_addrs {
-            let sockaddr = addr.parse().unwrap();
+            let sockaddr = addr.parse::<SocketAddr>().unwrap();
 
-            let udp_builder = match sockaddr {
-                SocketAddr::V4(_) => UdpBuilder::new_v4().unwrap(),
-                SocketAddr::V6(_) => UdpBuilder::new_v6().unwrap(),
+            let domain = match sockaddr {
+                SocketAddr::V4(_) => Domain::ipv4(),
+                SocketAddr::V6(_) => Domain::ipv6(),
             };
 
-            let udp_builder_ref = match sockaddr {
-                SocketAddr::V4(_) => &udp_builder,
-                SocketAddr::V6(_) => udp_builder.only_v6(true).unwrap(),
-            };
+            let socket = Socket::new(domain, Type::dgram(), Some(Protocol::udp())).unwrap();
+            socket.set_reuse_port(true).unwrap();
+            socket.set_recv_buffer_size(67108864).unwrap();
+            socket.bind(&sockaddr.into()).unwrap();
 
-            let socket = match udp_builder_ref.reuse_port(true).unwrap().bind(sockaddr) {
-                Ok(s) => s,
-                Err(e) => panic!("Couldn't bind socket: {}", e)
-            };
-
-            sockets.push(socket);
+            sockets.push(socket.into_udp_socket());
         }
 
         NtpServer{
             state: Arc::new(Mutex::new(state)),
-            sockets: sockets,
+            sockets,
             server_addr: server_addr,
             debug: debug,
         }
@@ -355,8 +348,16 @@ impl NtpServer {
         let request = NtpPacket::new_request(addr);
         let mut new_state: Option<NtpServerState> = None;
         let socket = match addr {
-            SocketAddr::V4(_) => UdpBuilder::new_v4().unwrap().bind("0.0.0.0:0").unwrap(),
-            SocketAddr::V6(_) => UdpBuilder::new_v6().unwrap().bind("[::]:0").unwrap(),
+            SocketAddr::V4(_) => {
+                let socket = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp())).unwrap();
+                socket.bind(&"0.0.0.0:0".parse::<SocketAddr>().unwrap().into()).unwrap();
+                socket.into_udp_socket()
+            },
+            SocketAddr::V6(_) => {
+                let socket = Socket::new(Domain::ipv6(), Type::dgram(), Some(Protocol::udp())).unwrap();
+                socket.bind(&"[::]:0".parse::<SocketAddr>().unwrap().into()).unwrap();
+                socket.into_udp_socket()
+            },
         };
 
         socket.set_read_timeout(Some(Duration::new(1, 0))).unwrap();
