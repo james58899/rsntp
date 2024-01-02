@@ -135,16 +135,16 @@ impl NtpPacket {
         let version = (buf[0] >> 3) & 0x7;
         let mode = buf[0] & 0x7;
 
-        if version < 1 || version > 4 {
+        if !(1..=4).contains(&version) {
             return Err(Error::new(ErrorKind::Other, "Unsupported version"));
         }
 
         Ok(NtpPacket{
             remote_addr: addr,
-            local_ts: local_ts,
-            leap: leap,
-            version: version,
-            mode: mode,
+            local_ts,
+            leap,
+            version,
+            mode,
             stratum: buf[1],
             poll: buf[2] as i8,
             precision: buf[3] as i8,
@@ -207,7 +207,7 @@ impl NtpPacket {
 
     fn new_request(remote_addr: SocketAddr) -> NtpPacket {
         NtpPacket{
-            remote_addr: remote_addr,
+            remote_addr,
             local_ts: NtpTimestamp::now(),
             leap: 0,
             version: 4,
@@ -280,27 +280,27 @@ impl NtpServer {
             let sockaddr = addr.parse::<SocketAddr>().unwrap();
 
             let domain = match sockaddr {
-                SocketAddr::V4(_) => Domain::ipv4(),
-                SocketAddr::V6(_) => Domain::ipv6(),
+                SocketAddr::V4(_) => Domain::IPV4,
+                SocketAddr::V6(_) => Domain::IPV6,
             };
 
-            let socket = Socket::new(domain, Type::dgram(), Some(Protocol::udp())).unwrap();
+            let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP)).unwrap();
             socket.set_reuse_port(true).unwrap();
             socket.set_recv_buffer_size(67108864).unwrap();
             socket.bind(&sockaddr.into()).unwrap();
 
-            sockets.push(socket.into_udp_socket());
+            sockets.push(socket.into());
         }
 
         NtpServer{
             state: Arc::new(Mutex::new(state)),
             sockets,
-            server_addr: server_addr,
-            debug: debug,
+            server_addr,
+            debug,
         }
     }
 
-    fn process_requests(thread_id: u32, debug: bool, socket: UdpSocket, state: Arc<Mutex<NtpServerState>>) {
+    fn process_requests(thread_id: usize, debug: bool, socket: UdpSocket, state: Arc<Mutex<NtpServerState>>) {
         let mut last_update = NtpTimestamp::now();
         let mut cached_state: NtpServerState;
         cached_state = *state.lock().unwrap();
@@ -322,19 +322,16 @@ impl NtpServer {
                         }
                     }
 
-                    match request.make_response(&cached_state) {
-                        Some(response) => {
-                            match response.send(&socket) {
-                                Ok(_) => {
-                                    if debug {
-                                        println!("Thread #{} sent {:?}", thread_id, response);
-                                    }
-                                },
-                                Err(e) => println!("Thread #{} failed to send packet to {}: {}",
-                                                   thread_id, response.remote_addr, e)
-                            }
-                        },
-                        None => {}
+                    if let Some(response) = request.make_response(&cached_state) {
+                        match response.send(&socket) {
+                            Ok(_) => {
+                                if debug {
+                                    println!("Thread #{} sent {:?}", thread_id, response);
+                                }
+                            },
+                            Err(e) => println!("Thread #{} failed to send packet to {}: {}",
+                                               thread_id, response.remote_addr, e)
+                        }
                     }
                 },
                 Err(e) => {
@@ -347,16 +344,16 @@ impl NtpServer {
     fn update_state(state: Arc<Mutex<NtpServerState>>, addr: SocketAddr, debug: bool) {
         let request = NtpPacket::new_request(addr);
         let mut new_state: Option<NtpServerState> = None;
-        let socket = match addr {
+        let socket: UdpSocket = match addr {
             SocketAddr::V4(_) => {
-                let socket = Socket::new(Domain::ipv4(), Type::dgram(), Some(Protocol::udp())).unwrap();
+                let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).unwrap();
                 socket.bind(&"0.0.0.0:0".parse::<SocketAddr>().unwrap().into()).unwrap();
-                socket.into_udp_socket()
+                socket.into()
             },
             SocketAddr::V6(_) => {
-                let socket = Socket::new(Domain::ipv6(), Type::dgram(), Some(Protocol::udp())).unwrap();
+                let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP)).unwrap();
                 socket.bind(&"[::]:0".parse::<SocketAddr>().unwrap().into()).unwrap();
-                socket.into_udp_socket()
+                socket.into()
             },
         };
 
@@ -411,11 +408,8 @@ impl NtpServer {
 
     fn run(&self) {
         let mut threads = vec![];
-        let mut id = 0;
-        let quit = false;
 
-        for socket in &self.sockets {
-            id = id + 1;
+        for (id, socket) in self.sockets.iter().enumerate() {
             let state = self.state.clone();
             let debug = self.debug;
             let cloned_socket = socket.try_clone().unwrap();
@@ -423,20 +417,16 @@ impl NtpServer {
             threads.push(thread::spawn(move || {NtpServer::process_requests(id, debug, cloned_socket, state); }));
         }
 
-        while ! quit {
+        loop {
             NtpServer::update_state(self.state.clone(), self.server_addr.parse().unwrap(), self.debug);
 
             thread::sleep(Duration::new(1, 0));
-        }
-
-        for thread in threads {
-            let _ = thread.join();
         }
     }
 }
 
 fn print_usage(opts: Options) {
-    let brief = format!("Usage: rsntp [OPTIONS]");
+    let brief = "Usage: rsntp [OPTIONS]".to_string();
     print!("{}", opts.usage(&brief));
 }
 
@@ -488,7 +478,7 @@ fn main() {
     if matches.opts_present(&["r".to_string(), "u".to_string()]) {
         privdrop::PrivDrop::default()
             .chroot(matches.opt_str("r").unwrap_or("/".to_string()))
-            .user(&matches.opt_str("u").unwrap_or("root".to_string()))
+            .user(matches.opt_str("u").unwrap_or("root".to_string()))
             .apply()
             .unwrap_or_else(|e| { panic!("Couldn't drop privileges: {}", e) });
     }
