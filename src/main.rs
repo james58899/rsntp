@@ -287,6 +287,9 @@ impl NtpServer {
             let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP)).unwrap();
             socket.set_reuse_port(true).unwrap();
             socket.set_recv_buffer_size(67108864).unwrap();
+            if domain == Domain::IPV6 {
+                socket.set_only_v6(true).unwrap();
+            }
             socket.bind(&sockaddr.into()).unwrap();
 
             sockets.push(socket.into());
