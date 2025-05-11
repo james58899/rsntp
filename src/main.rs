@@ -338,7 +338,9 @@ impl NtpServer {
                     }
                 },
                 Err(e) => {
-                    println!("Thread #{} failed to receive packet: {}", thread_id, e);
+                    if debug {
+                        println!("Thread #{} failed to receive packet: {}", thread_id, e);
+                    }
                 },
             }
         }
